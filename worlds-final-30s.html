@@ -43,8 +43,17 @@ const CFG = {
   audioStart: 0,          // 곡의 몇 초 지점부터 쓸지 (예: 후렴 시작점)
   year: '2026',
   matchup: 'BLG  VS  GEN.G',
-  dateLine: '11.15 (일)  ·  5판 3선승제',
+  dateLine: '11.15 (일) 오전 4시  ·  5판 3선승제',
+  // [선수 이미지 키, 선수 이름, 챔피언 이미지 키, 챔피언 이름, 한글]  — images/players/<키>.png, images/champs/<키>.jpg
+  roster: [
+    { role: 'TOP',     blg: ['bin', 'BIN', 'Jax', 'JAX', '잭스'],               gen: ['kiin', 'KIIN', 'KSante', "K'SANTE", '크산테'] },
+    { role: 'JUNGLE',  blg: ['xun', 'XUN', 'LeeSin', 'LEE SIN', '리 신'],        gen: ['canyon', 'CANYON', 'Nidalee', 'NIDALEE', '니달리'] },
+    { role: 'MID',     blg: ['knight', 'KNIGHT', 'Syndra', 'SYNDRA', '신드라'],  gen: ['chovy', 'CHOVY', 'Yone', 'YONE', '요네'] },
+    { role: 'BOT',     blg: ['viper', 'VIPER', 'Kalista', 'KALISTA', '칼리스타'], gen: ['ruler', 'RULER', 'Varus', 'VARUS', '바루스'] },
+    { role: 'SUPPORT', blg: ['on', 'ON', 'Rell', 'RELL', '렐'],                  gen: ['duro', 'DURO', 'Rakan', 'RAKAN', '라칸'] },
+  ],
 };
+const ROSTER_T0 = 13.8, ROLE_D = 1.08, SEAM = 110;
 const DUR = 30, W = 1920, H = 1080;
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const layer = document.createElement('canvas'); layer.width = W; layer.height = H; const lx = layer.getContext('2d');
@@ -65,7 +74,8 @@ const GOLD = '#c8aa6e', GOLD2 = '#f0e6d2', TEAL = '#0ac8b9', INK = '#050608';
 
 /* 임팩트 타이밍 (셰이크/플래시/색수차) */
 const HITS = [[.7,1],[3.6,.9],[4.5,.9],[5.4,.9],[6.3,1.1],[7.6,1.1],[9.35,1.2],[9.65,1.2],[10.0,.7],[12.2,1.3],
-  [15.4,.5],[16,.5],[16.6,.55],[17.2,.6],[17.8,.7],[18.4,1.1],[20.2,1.8],[22,2.2],
+  ...[0, 1, 2, 3, 4].flatMap(i => [[ROSTER_T0 + i * ROLE_D, .8], [ROSTER_T0 + i * ROLE_D + .5, i === 4 ? 1.3 : 1.1]]),
+  [20.2,1.8],[22,2.2],
   [24.6,.7],[25.1,.7],[25.6,.8],[26.1,.9],[26.8,1.4],[27.6,1.6]];
 function impact(t, decay = 8) { let s = 0; for (const [h, k] of HITS) { const d = t - h; if (d >= 0 && d < 1) s += k * Math.exp(-d * decay); } return s; }
 
@@ -119,10 +129,24 @@ function sweep(drawFn, t, t0, t1, color = 'rgba(255,248,225,.95)') {
 const imgs = [null, null, null];
 CFG.images.forEach((src, i) => { const im = new Image(); im.onload = () => imgs[i] = im; im.src = src; });
 /* 선수 컷아웃 (투명 PNG) */
-const players = {};
-[['knight', 'images/knight.png'], ['chovy', 'images/chovy.png']].forEach(([k, src]) => { const im = new Image(); im.onload = () => players[k] = im; im.src = src; });
+const players = {}, champs = {};
+for (const r of CFG.roster) for (const p of [r.blg, r.gen]) {
+  const a = new Image(); a.onload = () => players[p[0]] = a; a.src = `images/players/${p[0]}.png`;
+  const b = new Image(); b.onload = () => champs[p[2]] = b; b.src = `images/champs/${p[2]}.jpg`;
+}
+function champ(key, cx, scale, alpha) {
+  const im = champs[key]; if (!im || alpha <= .01) return;
+  const r = H / im.height * scale, w = im.width * r, h = im.height * r;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.drawImage(im, cx - w / 2, H / 2 - h / 2, w, h); ctx.restore();
+}
+function half(side, fn) { // 대각선으로 나눈 좌/우 화면
+  ctx.save(); ctx.beginPath();
+  if (side < 0) { ctx.moveTo(-60, -60); ctx.lineTo(W / 2 + SEAM, -60); ctx.lineTo(W / 2 - SEAM, H + 60); ctx.lineTo(-60, H + 60); }
+  else { ctx.moveTo(W / 2 + SEAM, -60); ctx.lineTo(W + 60, -60); ctx.lineTo(W + 60, H + 60); ctx.lineTo(W / 2 - SEAM, H + 60); }
+  ctx.closePath(); ctx.clip(); fn(); ctx.restore();
+}
 const pc = document.createElement('canvas'), px = pc.getContext('2d');
-function player(key, cx, bottom, h, alpha, tint, tintAmt = .35) {
+function player(key, cx, bottom, h, alpha, tint, tintAmt = .35, glitch = 0) {
   const im = players[key]; if (!im || alpha <= .01) return;
   const w = Math.ceil(h * im.width / im.height); h = Math.ceil(h);
   pc.width = w; pc.height = h;
@@ -134,7 +158,12 @@ function player(key, cx, bottom, h, alpha, tint, tintAmt = .35) {
   const g = px.createLinearGradient(0, h * .5, 0, h); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
   px.fillStyle = g; px.fillRect(0, 0, w, h);
   px.globalCompositeOperation = 'source-over';
-  ctx.save(); ctx.globalAlpha = alpha; ctx.shadowColor = tint; ctx.shadowBlur = 40; ctx.drawImage(pc, cx - w / 2, bottom - h); ctx.restore();
+  ctx.save(); ctx.globalAlpha = alpha; ctx.shadowColor = tint; ctx.shadowBlur = 40;
+  if (glitch > 0) { // 변신 직전 글리치: 가로 슬라이스를 흩뜨림
+    const n = 18, sh = h / n, seed = Math.floor(performance.now() / 33);
+    for (let s = 0; s < n; s++) { const dx = (rnd(s * 7 + seed) - .5) * glitch; ctx.drawImage(pc, 0, s * sh, w, sh, cx - w / 2 + dx, bottom - h + s * sh, w, sh); }
+  } else ctx.drawImage(pc, cx - w / 2, bottom - h);
+  ctx.restore();
 }
 function cover(i, t, scale = 1, dx = 0, alpha = 1) {
   ctx.save(); ctx.globalAlpha = alpha;
@@ -287,9 +316,9 @@ function scene(t) {
     }
   }
 
-  // S4 11.2–15.2  ONE STAGE
-  else if (t < 15.2) {
-    const lt = t - 11.2, ex = E.inExpo(P(t, 14.7, 15.2));
+  // S4 11.2–13.8  ONE STAGE
+  else if (t < 13.8) {
+    const lt = t - 11.2, ex = E.inExpo(P(t, 13.45, 13.8));
     cover(1, t, 1.05 + lt * .04, -lt * 20, P(lt, 0, .4));
     grade(.55 + ex * .45);
     embers(t, 1);
@@ -297,37 +326,57 @@ function scene(t) {
     if (t > 12.2) {
       const d = t - 12.2;
       for (let j = 1; j <= 4; j++) txt(ctx, 'STAGE', W / 2, H / 2 + 20, { size: 400, stroke: 2, color: GOLD, track: 12,
-        sx: 1 + d * .18 * j, sy: 1 + d * .18 * j, alpha: Math.max(0, .5 - d * .25) * (1 - ex) });
+        sx: 1 + d * .18 * j, sy: 1 + d * .18 * j, alpha: Math.max(0, .5 - d * .3) * (1 - ex) });
     }
     const k = E.expo(P(t, 12.0, 12.25));
-    sweep(c => txt(c, 'STAGE', W / 2, H / 2 + 20, { size: 400, track: 12, sx: lerp(.6, 1, k) + lt * .02, sy: lerp(1.6, 1, k) + lt * .02, alpha: P(t, 12.0, 12.08) * (1 - ex) }), t, 12.5, 13.6);
-    sub('전 세계가 지켜보는, 단 하나의 무대', 12.9, t, H / 2 + 270, 14.8);
+    sweep(c => txt(c, 'STAGE', W / 2, H / 2 + 20, { size: 400, track: 12, sx: (lerp(.6, 1, k) + lt * .02) * (1 + ex * .4), sy: lerp(1.6, 1, k) + lt * .02, alpha: P(t, 12.0, 12.08) * (1 - ex) }), t, 12.35, 13.2);
+    sub('전 세계가 지켜보는, 단 하나의 무대', 12.6, t, H / 2 + 270, 13.5);
   }
 
-  // S5 15.2–19.2  BEST OF FIVE
+  // S5 13.8–19.2  5 ROLES: 선수 → 챔피언
   else if (t < 19.2) {
-    const lt = t - 15.2, ex = E.inExpo(P(t, 18.9, 19.2));
-    ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(lt * .05); ctx.strokeStyle = 'rgba(200,170,110,.08)'; ctx.lineWidth = 1;
-    for (let i = -20; i <= 20; i++) { ctx.beginPath(); ctx.moveTo(i * 80, -1200); ctx.lineTo(i * 80, 1200); ctx.moveTo(-1200, i * 80); ctx.lineTo(1200, i * 80); ctx.stroke(); }
-    ctx.restore();
-    embers(t, .7);
-    const ticks = [15.4, 16, 16.6, 17.2, 17.8];
-    const n = ticks.filter(x => t >= x).length;
-    const fadeNum = 1 - E.inExpo(P(t, 18.2, 18.45));
-    if (n > 0) {
-      const d = t - ticks[n - 1], pop = lerp(1.5, 1, E.expo(clamp(d / .3)));
-      chroma(String(n), W / 2, H / 2 - 10, { size: 560, sx: pop, sy: pop, color: n === 5 ? GOLD : GOLD2, alpha: fadeNum }, ca * 1.2);
-      txt(ctx, `GAME ${n}`, W / 2, H / 2 + 330, { size: 38, track: 24, color: GOLD, alpha: fadeNum });
+    const i = Math.min(4, Math.floor((t - ROSTER_T0) / ROLE_D)), lt = t - ROSTER_T0 - i * ROLE_D;
+    const R = CFG.roster[i], TF = .5; // TF: 변신 시점
+    const BLG = '#3fd2ff';
+    const kin = E.expo(P(lt, 0, .18)), morph = lt >= TF;
+    const sides = [[-1, R.blg, BLG, W * .27], [1, R.gen, GOLD, W * .73]];
+    for (const [s, p, col, cx] of sides) {
+      half(s, () => {
+        const off = (1 - kin) * 260 * s;
+        // 배경
+        const g = ctx.createLinearGradient(s < 0 ? 0 : W, 0, W / 2, H);
+        g.addColorStop(0, s < 0 ? '#06222c' : '#2a2210'); g.addColorStop(1, INK);
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        txt(ctx, R.role, cx + off * .5, H / 2 - 60, { size: 520, stroke: 2, color: col, alpha: .12, track: 10 });
+        if (!morph) {
+          const gl = lt > TF - .1 ? (lt - (TF - .1)) * 900 : 0;
+          player(p[0], cx + off, H + 20, 900 + lt * 70, 1, col, .18, gl);
+        } else {
+          const ml = lt - TF;
+          champ(p[2], cx + off, 1.14 - ml * .06, E.out(clamp(ml / .12)));
+          ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.fillStyle = s < 0 ? 'rgba(63,210,255,.25)' : 'rgba(200,170,110,.3)'; ctx.fillRect(0, 0, W, H); ctx.restore();
+          const sh = ctx.createLinearGradient(0, H * .45, 0, H); sh.addColorStop(0, 'rgba(5,6,8,0)'); sh.addColorStop(1, 'rgba(5,6,8,.85)');
+          ctx.fillStyle = sh; ctx.fillRect(0, 0, W, H);
+          // 변신 플래시
+          const fl = Math.exp(-ml * 18); if (fl > .02) { ctx.fillStyle = `rgba(255,250,235,${fl * .55})`; ctx.fillRect(0, 0, W, H); }
+        }
+      });
     }
-    const arc = lerp((n - 1) / 5, n / 5, E.expo(clamp((t - (ticks[n - 1] || 15.4)) / .35)));
-    ctx.save(); ctx.globalAlpha = fadeNum; ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(200,170,110,.18)';
-    ctx.beginPath(); ctx.arc(W / 2, H / 2 - 10, 400, 0, 7); ctx.stroke();
-    ctx.strokeStyle = GOLD; ctx.shadowColor = GOLD; ctx.shadowBlur = 20;
-    ctx.beginPath(); ctx.arc(W / 2, H / 2 - 10, 400, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, arc)); ctx.stroke(); ctx.restore();
-    if (t > 18.3) {
-      const k = E.expo(P(t, 18.3, 18.6));
-      chroma('BEST OF FIVE', W / 2, H / 2 - 30, { size: 250, track: lerp(120, 16, k) + ex * 300, alpha: P(t, 18.3, 18.4) * (1 - ex), sx: lerp(1.3, 1, k), sy: lerp(1.3, 1, k) }, ca);
-      sub('다섯 번의 전쟁, 하나의 결말', 18.55, t, H / 2 + 130, 19.1);
+    // 대각선 이음매
+    ctx.save(); ctx.shadowColor = '#fff'; ctx.shadowBlur = 24; ctx.strokeStyle = '#fff8e8'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(W / 2 + SEAM, -50); ctx.lineTo(W / 2 - SEAM, H + 50); ctx.stroke(); ctx.restore();
+    // 역할 라벨
+    txt(ctx, `0${i + 1} / 05`, W / 2, 110, { size: 26, track: 8, color: GOLD, alpha: kin * .9 });
+    chroma(R.role, W / 2 + SEAM * .1, 200, { size: 120, track: lerp(60, 18, kin), color: GOLD2, alpha: kin }, ca);
+    // 이름: 선수 → 챔피언 (위로 밀어 올리며 교체)
+    for (const [s, p, col] of sides) {
+      const x = s < 0 ? 110 : W - 110, al = s < 0 ? 'left' : 'right';
+      const sw = E.expo(P(lt, TF, TF + .22));
+      ctx.save(); ctx.beginPath(); ctx.rect(s < 0 ? 0 : W / 2, H - 330, W / 2, 230); ctx.clip();
+      txt(ctx, p[1], x - (1 - kin) * 120 * s, H - 200 - sw * 160, { size: 140, align: al, track: 8, color: col, alpha: kin * (1 - sw) });
+      txt(ctx, p[3], x, H - 200 + (1 - sw) * 160, { size: 140, align: al, track: 8, color: GOLD2, alpha: sw });
+      ctx.restore();
+      txt(ctx, morph ? p[4] : (s < 0 ? 'BILIBILI GAMING' : 'GEN.G ESPORTS'), x, H - 330, { size: 28, font: morph ? "'Noto Sans KR'" : 'Anton', weight: morph ? 900 : '', align: al, track: 10, color: col, alpha: kin * .9 });
     }
   }
 
@@ -429,18 +478,114 @@ function render(t) {
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 54); ctx.fillRect(0, H - 54, W, 54);
 }
 
+/* ===== 오리지널 사운드트랙 (WebAudio 합성, 저작권 걱정 없음) ===== */
+async function buildScore() {
+  const sr = 44100, oc = new OfflineAudioContext(2, sr * DUR, sr);
+  const master = oc.createGain(); master.gain.value = .75;
+  const comp = oc.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 5; comp.attack.value = .003; comp.release.value = .25;
+  master.connect(comp); comp.connect(oc.destination);
+  const rv = oc.createConvolver(), irLen = sr * 3.5, ir = oc.createBuffer(2, irLen, sr);
+  for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < irLen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 3.5); }
+  rv.buffer = ir; const rvg = oc.createGain(); rvg.gain.value = .4; rv.connect(rvg); rvg.connect(master);
+  const out = (node, wet = .25) => { node.connect(master); if (wet) { const g = oc.createGain(); g.gain.value = wet; node.connect(g); g.connect(rv); } };
+  const nb = oc.createBuffer(1, sr * 2, sr); { const d = nb.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  const noise = (t, dur) => { const s = oc.createBufferSource(); s.buffer = nb; s.loop = true; s.start(t); s.stop(t + dur); return s; };
+  const env = (g, t, peak, a, d) => { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); };
+
+  const boom = (t, k) => { // 서브 킥
+    const o = oc.createOscillator(), g = oc.createGain();
+    o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(30, t + .6);
+    env(g, t, Math.min(1, .55 * k), .005, 1.3); o.connect(g); out(g, .15); o.start(t); o.stop(t + 1.5);
+    const n = noise(t, .4), f = oc.createBiquadFilter(), ng = oc.createGain(); f.type = 'lowpass'; f.frequency.value = 2400;
+    env(ng, t, .35 * k, .002, .3); n.connect(f); f.connect(ng); out(ng, .5);
+  };
+  const braam = (t, k, dur = 2.4) => { // 브라암
+    const f = oc.createBiquadFilter(), g = oc.createGain(); f.type = 'lowpass'; f.Q.value = 3;
+    f.frequency.setValueAtTime(120, t); f.frequency.exponentialRampToValueAtTime(1600, t + .18); f.frequency.exponentialRampToValueAtTime(200, t + dur);
+    env(g, t, .14 * k, .04, dur); f.connect(g); out(g, .45);
+    for (const fr of [36.71, 73.42, 110, 146.83]) for (const dt of [-9, 9]) {
+      const o = oc.createOscillator(); o.type = 'sawtooth'; o.frequency.value = fr; o.detune.value = dt; o.connect(f); o.start(t); o.stop(t + dur + .1);
+    }
+  };
+  const taiko = (t, k) => {
+    const o = oc.createOscillator(), g = oc.createGain(); o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(48, t + .25);
+    env(g, t, .45 * k, .004, .5); o.connect(g); out(g, .35); o.start(t); o.stop(t + .6);
+    const n = noise(t, .15), f = oc.createBiquadFilter(), ng = oc.createGain(); f.type = 'bandpass'; f.frequency.value = 260; f.Q.value = 1.5;
+    env(ng, t, .3 * k, .002, .12); n.connect(f); f.connect(ng); out(ng, .3);
+  };
+  const tick = (t, a) => { const n = noise(t, .04), f = oc.createBiquadFilter(), g = oc.createGain(); f.type = 'highpass'; f.frequency.value = 7000; env(g, t, a, .001, .03); n.connect(f); f.connect(g); out(g, .1); };
+  const osti = (t, fr, a, len = .16) => { // 저음 스트링 오스티나토
+    const o = oc.createOscillator(), f = oc.createBiquadFilter(), g = oc.createGain(); o.type = 'sawtooth'; o.frequency.value = fr;
+    f.type = 'lowpass'; f.frequency.setValueAtTime(1400, t); f.frequency.exponentialRampToValueAtTime(250, t + len);
+    env(g, t, a, .006, len); o.connect(f); f.connect(g); out(g, .2); o.start(t); o.stop(t + len + .05);
+  };
+  const riser = (t0, t1, a = .3) => {
+    const n = noise(t0, t1 - t0), f = oc.createBiquadFilter(), g = oc.createGain(); f.type = 'bandpass'; f.Q.value = 2;
+    f.frequency.setValueAtTime(300, t0); f.frequency.exponentialRampToValueAtTime(7000, t1);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(a, t1 - .02); g.gain.linearRampToValueAtTime(0, t1);
+    n.connect(f); f.connect(g); out(g, .3);
+    const o = oc.createOscillator(), og = oc.createGain(); o.type = 'sawtooth'; o.frequency.setValueAtTime(110, t0); o.frequency.exponentialRampToValueAtTime(880, t1);
+    og.gain.setValueAtTime(0.0001, t0); og.gain.exponentialRampToValueAtTime(a * .18, t1 - .02); og.gain.linearRampToValueAtTime(0, t1);
+    o.connect(og); out(og, .4); o.start(t0); o.stop(t1);
+  };
+
+  // 드론 (곡 전체의 바닥)
+  { const f = oc.createBiquadFilter(), g = oc.createGain(); f.type = 'lowpass'; f.frequency.value = 260; f.Q.value = 1;
+    const pts = [[0, .0001], [2.5, .12], [7.2, .15], [13.8, .18], [19.2, .18], [19.4, .03], [20.15, .03], [20.2, .22], [27.5, .24], [29.9, .0001]];
+    g.gain.setValueAtTime(pts[0][1], 0); for (const [tt, v] of pts.slice(1)) g.gain.linearRampToValueAtTime(v, tt);
+    f.connect(g); out(g, .3);
+    for (const fr of [36.71, 55, 73.42]) { const o = oc.createOscillator(); o.type = 'sawtooth'; o.frequency.value = fr; o.detune.value = (Math.random() - .5) * 14; o.connect(f); o.start(0); o.stop(DUR); } }
+
+  // 임팩트 (화면 HITS와 동일 타이밍)
+  for (const [h, k] of HITS) { boom(h, k); if (k >= 1.1) braam(h, k, h > 27 ? 3 : 2.2); }
+  // 오스티나토: 구간별 템포
+  const D2 = 73.42, F2 = 87.31, A2 = 110, G2 = 98, C3 = 130.81;
+  const pat = [D2, D2, F2, D2, D2, A2, G2, F2];
+  const run = (t0, t1, step, a) => { let n = 0; for (let t = t0; t < t1 - .01; t += step, n++) osti(t, pat[n % 8], a * (n % 4 === 0 ? 1.3 : 1)); };
+  run(3.6, 7.2, .225, .09); run(7.2, 13.8, .25, .07); run(ROSTER_T0, 19.2, ROLE_D / 4, .1); run(20.2, 24.4, .3, .06); run(24.6, 27.6, .125, .08);
+  // 틱 (긴장감)
+  for (let t = 3.6; t < 19.2; t += .125) tick(t, t > ROSTER_T0 ? .06 : .035);
+  for (let t = 24.6; t < 27.6; t += .0625) tick(t, .05);
+  // 롤 시퀀스 타이코
+  for (let i = 0; i < 5; i++) { const ts = ROSTER_T0 + i * ROLE_D; taiko(ts + ROLE_D * .25, .8); taiko(ts + ROLE_D * .75, .9); taiko(ts + ROLE_D * .875, .6); }
+  // 라이저
+  riser(6.4, 7.6, .25); riser(12.6, 13.8, .2); riser(18.2, 19.2, .3); riser(19.85, 20.2, .2); riser(26.0, 27.6, .38);
+  // 엔딩 패드 (D minor)
+  for (const fr of [146.83, 174.61, 220, 293.66]) { const o = oc.createOscillator(), g = oc.createGain(); o.type = 'triangle'; o.frequency.value = fr;
+    g.gain.setValueAtTime(0.0001, 27.6); g.gain.exponentialRampToValueAtTime(.05, 28.2); g.gain.linearRampToValueAtTime(0, 29.95); o.connect(g); out(g, .6); o.start(27.6); o.stop(30); }
+  return oc.startRendering();
+}
+
 /* ===== 재생 / 오디오 / 내보내기 ===== */
-const aud = document.getElementById('aud'); aud.src = CFG.audio;
+const aud = document.getElementById('aud');
+let actx, dest, mediaSrc, synthSrc = null, scoreBuf = null, useFile = false;
+aud.addEventListener('loadeddata', () => useFile = true);
+aud.src = CFG.audio; // 파일이 있으면 그 음원을, 없으면 합성 사운드트랙을 사용
+buildScore().then(b => scoreBuf = b).catch(e => console.warn('score', e));
+function ensureAudio() {
+  if (actx) return;
+  actx = new AudioContext(); dest = actx.createMediaStreamDestination();
+  mediaSrc = actx.createMediaElementSource(aud); mediaSrc.connect(actx.destination); mediaSrc.connect(dest);
+}
+function stopAudio() { aud.pause(); if (synthSrc) { try { synthSrc.stop(); } catch (e) {} synthSrc = null; } }
+function startAudio(at) {
+  ensureAudio(); actx.resume(); stopAudio();
+  if (useFile) { try { aud.currentTime = CFG.audioStart + at; aud.play().catch(() => {}); } catch (e) {} }
+  else if (scoreBuf) {
+    synthSrc = actx.createBufferSource(); synthSrc.buffer = scoreBuf;
+    synthSrc.connect(actx.destination); synthSrc.connect(dest); synthSrc.start(0, Math.min(at, DUR - .01));
+  }
+}
 let playing = false, t0 = 0, cur = 0, rec = null;
 const $ = id => document.getElementById(id);
 function now() { return playing ? Math.min(DUR, (performance.now() - t0) / 1000) : cur; }
 function play() {
   if (cur >= DUR) cur = 0;
   playing = true; t0 = performance.now() - cur * 1000;
-  try { aud.currentTime = CFG.audioStart + cur; aud.play().catch(() => {}); } catch (e) {}
+  startAudio(cur);
   $('play').textContent = '❚❚ 정지';
 }
-function pause() { cur = now(); playing = false; aud.pause(); $('play').textContent = '▶ 재생'; }
+function pause() { cur = now(); playing = false; stopAudio(); $('play').textContent = '▶ 재생'; }
 $('play').onclick = () => playing ? pause() : play();
 $('restart').onclick = () => { pause(); cur = 0; play(); };
 $('scrub').oninput = e => { const was = playing; pause(); cur = +e.target.value; if (was) play(); };
@@ -454,13 +599,10 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-let actx, dest;
 $('export').onclick = () => {
+  ensureAudio();
   const stream = cv.captureStream(60);
-  try {
-    if (!actx) { actx = new AudioContext(); const src = actx.createMediaElementSource(aud); dest = actx.createMediaStreamDestination(); src.connect(dest); src.connect(actx.destination); }
-    actx.resume(); dest.stream.getAudioTracks().forEach(tr => stream.addTrack(tr));
-  } catch (e) {}
+  dest.stream.getAudioTracks().forEach(tr => stream.addTrack(tr));
   const mime = ['video/webm;codecs=vp9,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
   rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 });
   const chunks = []; rec.ondataavailable = e => e.data.size && chunks.push(e.data);
