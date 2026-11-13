@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worlds Final Spot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Cinzel:wght@700;900&family=Noto+Sans+KR:wght@500;900&display=swap" rel="stylesheet">
+<style>
+  :root{--gold:#c8aa6e;--ink:#050608}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:'Noto Sans KR',sans-serif;color:#f0e6d2}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{width:min(100vw,177.78vh);height:min(56.25vw,100vh);display:block;background:#000}
+  #ui{position:fixed;left:0;right:0;bottom:0;padding:14px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+      background:linear-gradient(transparent,rgba(0,0,0,.85));transition:opacity .4s}
+  body.idle #ui{opacity:0}
+  button,label.btn{font:600 13px 'Noto Sans KR';color:#050608;background:var(--gold);border:0;border-radius:4px;padding:8px 14px;cursor:pointer}
+  label.btn{background:#1e2328;color:var(--gold);border:1px solid var(--gold)}
+  input[type=range]{flex:1;min-width:160px;accent-color:var(--gold)}
+  #time{font:500 13px monospace;min-width:90px}
+  #hint{position:fixed;top:12px;left:16px;font-size:12px;opacity:.6;transition:opacity .4s}
+  body.idle #hint{opacity:0}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1920" height="1080"></canvas></div>
+<div id="hint">Space 재생/정지 · 이미지/음원 파일을 화면에 드래그해서 교체</div>
+<div id="ui">
+  <button id="play">▶ 재생</button>
+  <button id="restart">⟲ 처음</button>
+  <input id="scrub" type="range" min="0" max="30" step="0.01" value="0">
+  <span id="time">00.00 / 30.00</span>
+  <label class="btn">♪ 음원<input id="fAudio" type="file" accept="audio/*" hidden></label>
+  <label class="btn">▣ 이미지 3장<input id="fImg" type="file" accept="image/*" multiple hidden></label>
+  <button id="export">● WebM 내보내기</button>
+</div>
+<audio id="aud" preload="auto"></audio>
+<script>
+/* ===== 설정 ===== */
+const CFG = {
+  images: ['images/01.jpg', 'images/02.jpg', 'images/03.jpg'], // 01: 경기장/관중, 02: 무대, 03: 소환사의 컵
+  audio: 'audio/heavy-is-the-crown.mp3',
+  audioStart: 0,          // 곡의 몇 초 지점부터 쓸지 (예: 후렴 시작점)
+  year: '2026',
+  matchup: 'BLG  VS  GEN.G',
+  dateLine: '11.15 (일)  ·  5판 3선승제',
+};
+const DUR = 30, W = 1920, H = 1080;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const layer = document.createElement('canvas'); layer.width = W; layer.height = H; const lx = layer.getContext('2d');
+
+/* ===== 유틸 ===== */
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const P = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const E = {
+  out: x => 1 - Math.pow(1 - x, 3),
+  expo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inExpo: x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10),
+  inOut: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  back: x => { const c = 2.2, c3 = c + 1; return 1 + c3 * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); },
+};
+const rnd = i => { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+const GOLD = '#c8aa6e', GOLD2 = '#f0e6d2', TEAL = '#0ac8b9', INK = '#050608';
+
+/* 임팩트 타이밍 (셰이크/플래시/색수차) */
+const HITS = [[.7,1],[3.6,.9],[4.5,.9],[5.4,.9],[6.3,1.1],[7.6,1.1],[9.35,1.2],[9.65,1.2],[10.0,.7],[12.2,1.3],
+  [15.4,.5],[16,.5],[16.6,.55],[17.2,.6],[17.8,.7],[18.4,1.1],[20.2,1.8],[22,2.2],
+  [24.6,.7],[25.1,.7],[25.6,.8],[26.1,.9],[26.8,1.4],[27.6,1.6]];
+function impact(t, decay = 8) { let s = 0; for (const [h, k] of HITS) { const d = t - h; if (d >= 0 && d < 1) s += k * Math.exp(-d * decay); } return s; }
+
+/* ===== 그리기 헬퍼 ===== */
+function txt(c, s, x, y, o = {}) {
+  const { size = 200, font = 'Anton', weight = '', color = GOLD2, alpha = 1, sx = 1, sy = 1, track = 0,
+          align = 'center', stroke = 0, glow = 0, rot = 0 } = o;
+  if (alpha <= .001) return;
+  c.save(); c.translate(x, y); c.rotate(rot); c.scale(sx, sy); c.globalAlpha *= alpha;
+  c.font = `${weight} ${size}px ${font}`; c.textAlign = align; c.textBaseline = 'middle';
+  if ('letterSpacing' in c) c.letterSpacing = track + 'px';
+  const ox = align === 'center' ? track / 2 : align === 'right' ? track : 0;
+  if (glow) { c.shadowColor = color; c.shadowBlur = glow; }
+  if (stroke) { c.lineWidth = stroke; c.strokeStyle = color; c.strokeText(s, ox, 0); }
+  else { c.fillStyle = color; c.fillText(s, ox, 0); }
+  c.restore();
+}
+function measure(s, size, font = 'Anton', track = 0) {
+  ctx.save(); ctx.font = `${size}px ${font}`; if ('letterSpacing' in ctx) ctx.letterSpacing = track + 'px';
+  const w = ctx.measureText(s).width; ctx.restore(); return w;
+}
+function chroma(s, x, y, o, amt) {
+  if (amt > .5) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    txt(ctx, s, x - amt, y, { ...o, color: '#ff2a4a', alpha: (o.alpha ?? 1) * .75 });
+    txt(ctx, s, x + amt, y, { ...o, color: '#00d9ff', alpha: (o.alpha ?? 1) * .75 });
+    ctx.restore();
+  }
+  txt(ctx, s, x, y, o);
+}
+function sub(s, t0, t, y = 860, t1 = 99) {
+  const a = E.out(P(t, t0, t0 + .6)) * (1 - P(t, t1 - .3, t1));
+  txt(ctx, s, W / 2, y + (1 - a) * 20, { size: 40, font: "'Noto Sans KR'", weight: 500, color: GOLD, track: 14, alpha: a });
+}
+function sweep(drawFn, t, t0, t1, color = 'rgba(255,248,225,.95)') {
+  lx.setTransform(1, 0, 0, 1, 0, 0); lx.globalCompositeOperation = 'source-over'; lx.clearRect(0, 0, W, H);
+  drawFn(lx);
+  const k = P(t, t0, t1);
+  if (k > 0 && k < 1) {
+    lx.globalCompositeOperation = 'source-atop';
+    const x = lerp(-400, W + 400, E.inOut(k));
+    const g = lx.createLinearGradient(x - 220, 0, x + 220, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(.5, color); g.addColorStop(1, 'rgba(255,255,255,0)');
+    lx.fillStyle = g; lx.save(); lx.translate(W / 2, H / 2); lx.rotate(-.35); lx.translate(-W / 2, -H / 2);
+    lx.fillRect(-W, -H, W * 3, H * 3); lx.restore();
+  }
+  ctx.drawImage(layer, 0, 0);
+}
+
+/* 이미지 & 대체 비주얼 */
+const imgs = [null, null, null];
+CFG.images.forEach((src, i) => { const im = new Image(); im.onload = () => imgs[i] = im; im.src = src; });
+function cover(i, t, scale = 1, dx = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  const im = imgs[i];
+  if (im) {
+    const r = Math.max(W / im.width, H / im.height) * scale;
+    ctx.drawImage(im, W / 2 - im.width * r / 2 + dx, H / 2 - im.height * r / 2, im.width * r, im.height * r);
+  } else arena(t, i, scale);
+  ctx.restore();
+}
+function arena(t, seed, scale) { // 이미지가 없을 때의 절차적 경기장
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(scale, scale); ctx.translate(-W / 2, -H / 2);
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#02060c'); g.addColorStop(.6, '#071a24'); g.addColorStop(1, '#010203');
+  ctx.fillStyle = g; ctx.fillRect(-200, -200, W + 400, H + 400);
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 9; i++) { // 스포트라이트
+    const bx = W * (i + .5) / 9, sw = Math.sin(t * .8 + i * 1.7 + seed) * 260;
+    const lg = ctx.createLinearGradient(bx, -50, bx + sw, H * .78);
+    const col = (i + seed) % 3 === 0 ? '10,200,185' : '200,170,110';
+    lg.addColorStop(0, `rgba(${col},.32)`); lg.addColorStop(1, `rgba(${col},0)`);
+    ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(bx - 8, -50); ctx.lineTo(bx + 8, -50);
+    ctx.lineTo(bx + sw + 140, H * .8); ctx.lineTo(bx + sw - 140, H * .8); ctx.fill();
+  }
+  const fg = ctx.createRadialGradient(W / 2, H * .74, 10, W / 2, H * .74, 700);
+  fg.addColorStop(0, seed === 2 ? 'rgba(240,220,160,.55)' : 'rgba(10,200,185,.35)'); fg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H);
+  if (seed === 2) { // 트로피 실루엣 느낌의 빛기둥
+    const pg = ctx.createLinearGradient(W / 2 - 90, 0, W / 2 + 90, 0);
+    pg.addColorStop(0, 'rgba(255,230,170,0)'); pg.addColorStop(.5, 'rgba(255,230,170,.5)'); pg.addColorStop(1, 'rgba(255,230,170,0)');
+    ctx.fillStyle = pg; ctx.fillRect(W / 2 - 90, 0, 180, H);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.moveTo(0, H); // 관중 실루엣
+  for (let x = 0; x <= W; x += 14) ctx.lineTo(x, H - 90 - rnd(x + seed * 99) * 55 - Math.max(0, Math.sin(t * 6 + x * .05)) * 10);
+  ctx.lineTo(W, H); ctx.fill();
+  ctx.restore();
+}
+function grade(dark = .55) {
+  ctx.fillStyle = `rgba(3,5,8,${dark})`; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalCompositeOperation = 'overlay';
+  const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, 'rgba(10,200,185,.25)'); g.addColorStop(1, 'rgba(200,170,110,.35)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+function embers(t, boost = 1) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 160; i++) {
+    const sp = 40 + rnd(i) * 120, x = rnd(i + 5) * W + Math.sin(t * (.5 + rnd(i + 9)) + i) * 40;
+    const y = H + 40 - ((t * sp + rnd(i + 2) * (H + 80)) % (H + 80));
+    const s = 1 + rnd(i + 3) * 2.6, a = (.25 + rnd(i + 4) * .6) * boost;
+    ctx.fillStyle = `rgba(240,200,120,${Math.min(1, a)})`; ctx.beginPath(); ctx.arc(x, y, s, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function burst(x, y, t0, t, n = 90) {
+  const d = t - t0; if (d < 0 || d > 1.6) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const ang = Math.PI + rnd(i * 3) * Math.PI, sp = 300 + rnd(i * 7) * 1300;
+    const px = x + Math.cos(ang) * sp * E.out(clamp(d / 1.2)) * (rnd(i) > .5 ? 1 : -1);
+    const py = y + Math.sin(ang) * sp * .35 * E.out(clamp(d / 1.2)) + d * d * 200;
+    ctx.fillStyle = `rgba(240,210,150,${(1 - d / 1.6) * .8})`; ctx.fillRect(px, py, 3 + rnd(i) * 4, 2 + rnd(i * 2) * 3);
+  }
+  ctx.restore();
+}
+function speedLines(t, alpha = .35, color = '200,170,110') {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 40; i++) {
+    const y = rnd(i) * H, len = 200 + rnd(i + 1) * 700, sp = 2500 + rnd(i + 2) * 3000;
+    const x = ((t * sp + rnd(i + 3) * W * 2) % (W * 2)) - len;
+    ctx.fillStyle = `rgba(${color},${alpha * rnd(i + 4)})`; ctx.fillRect(W - x, y, len, 1 + rnd(i + 5) * 2);
+  }
+  ctx.restore();
+}
+/* 필름 그레인 */
+const grains = [...Array(6)].map(() => {
+  const g = document.createElement('canvas'); g.width = g.height = 256; const gc = g.getContext('2d'), d = gc.createImageData(256, 256);
+  for (let i = 0; i < d.data.length; i += 4) { const v = Math.random() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  gc.putImageData(d, 0, 0); return ctx.createPattern(g, 'repeat');
+});
+const vig = (() => { const g = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.05); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.85)'); return g; })();
+
+/* ===== 씬 ===== */
+function scene(t) {
+  ctx.fillStyle = INK; ctx.fillRect(0, 0, W, H);
+  const imp = impact(t), ca = imp * 14;
+
+  // S1 0–3.6  ONE YEAR
+  if (t < 3.6) {
+    embers(t, .6);
+    const ex = E.inExpo(P(t, 3.1, 3.6));
+    const lw = W * .55 * E.expo(P(t, 0, .7)) * (1 - ex);
+    ctx.fillStyle = GOLD; ctx.fillRect(W / 2 - lw / 2, H / 2 + 165, lw, 2);
+    const k = E.expo(P(t, .7, 1.4));
+    chroma('ONE YEAR.', W / 2, H / 2, { size: 300, track: lerp(90, 14, k) + ex * 200, sx: lerp(2.4, 1, k) * (1 + ex * .6), sy: lerp(2.4, 1, k),
+      alpha: P(t, .7, .78) * (1 - ex), color: GOLD2 }, ca);
+    sub('한 해의 모든 것이, 이 순간을 위해', 1.5, t, H / 2 + 230, 3.4);
+  }
+
+  // S2 3.6–7.2  GRIND / BLEED / FALL / RISE
+  else if (t < 7.2) {
+    const W4 = [['GRIND', '수천 번의 반복', 0], ['BLEED', '모든 것을 걸고', 0], ['FALL', '무너지고', -1], ['RISE', '다시 일어선다', 1]];
+    const i = Math.min(3, Math.floor((t - 3.6) / .9)), lt = t - 3.6 - i * .9, [w, kr, dir] = W4[i];
+    const inv = i % 2 === 1;
+    ctx.fillStyle = inv ? GOLD : INK; ctx.fillRect(0, 0, W, H);
+    speedLines(t, inv ? .0 : .4);
+    if (!inv) embers(t, 1);
+    const k = E.expo(P(lt, 0, .28));
+    const y = H / 2 - 40 + (dir === -1 ? -(1 - k) * 500 + lt * 60 : dir === 1 ? (1 - k) * 500 - lt * 60 : 0);
+    const sc = lerp(1.35, 1, k) + lt * .06;
+    chroma(w, W / 2, y, { size: 520, sx: sc, sy: sc, track: 10 + lt * 30, color: inv ? INK : GOLD2 }, inv ? 0 : ca * 1.4);
+    txt(ctx, kr, W / 2, H / 2 + 300, { size: 42, font: "'Noto Sans KR'", weight: 900, track: 18, color: inv ? INK : GOLD, alpha: P(lt, .12, .3) });
+    txt(ctx, `0${i + 1} / 04`, 90, 80, { size: 26, align: 'left', track: 6, color: inv ? INK : GOLD, alpha: .8 });
+  }
+
+  // S3 7.2–11.2  TWO TEAMS → BLG vs GEN.G
+  else if (t < 11.2) {
+    const lt = t - 7.2, ex = E.inExpo(P(t, 8.85, 9.2)), ex2 = E.inExpo(P(t, 10.8, 11.2));
+    cover(0, t, 1.18 - lt * .03 + ex2 * .3, 0, P(lt, 0, .3));
+    grade(.5 + P(t, 9.0, 9.3) * .2);
+    embers(t, .8);
+    // 중앙 빛기둥 (두 파트 공통)
+    const lh = H * .7 * E.expo(P(t, 7.6, 8.1)) * (1 - ex2);
+    ctx.save(); ctx.shadowColor = TEAL; ctx.shadowBlur = 30; ctx.fillStyle = '#e8fffd'; ctx.fillRect(W / 2 - 2, H / 2 - 40 - lh / 2, 4, lh); ctx.restore();
+    if (t < 9.2) {
+      const k = E.expo(P(t, 7.25, 7.6)), gap = 30 + ex * 900;
+      chroma('TWO', lerp(-200, W / 2 - gap, k), H / 2 - 40, { size: 300, align: 'right', track: 8, alpha: 1 - ex }, ca);
+      chroma('TEAMS', lerp(W + 200, W / 2 + gap, k), H / 2 - 40, { size: 300, align: 'left', track: 8, alpha: 1 - ex, color: GOLD }, ca);
+      sub('마지막까지 살아남은, 단 두 팀', 8.0, t, H / 2 + 180, 9.0);
+    } else {
+      const kL = E.expo(P(t, 9.15, 9.35)), kR = E.expo(P(t, 9.45, 9.65)), gap = 90 + ex2 * 900, a = 1 - ex2;
+      const BLG = '#3fd2ff';
+      // 왼쪽: BLG
+      chroma('BLG', lerp(-300, W / 2 - gap, kL), H / 2 - 70, { size: 280, align: 'right', track: 6, color: BLG, alpha: a * P(t, 9.15, 9.2) }, ca);
+      txt(ctx, 'BILIBILI GAMING', W / 2 - gap, H / 2 + 105, { size: 40, align: 'right', track: 10, color: GOLD2, alpha: a * P(t, 9.5, 9.8) });
+      txt(ctx, '8강 3–0 DK  ·  4강 3–1 T1', W / 2 - gap, H / 2 + 160, { size: 28, font: "'Noto Sans KR'", weight: 500, align: 'right', track: 4, color: GOLD, alpha: a * P(t, 9.9, 10.2) * .85 });
+      // 오른쪽: GEN.G
+      chroma('GEN.G', lerp(W + 300, W / 2 + gap, kR), H / 2 - 70, { size: 280, align: 'left', track: 6, color: GOLD, alpha: a * P(t, 9.45, 9.5) }, ca);
+      txt(ctx, 'GEN.G ESPORTS', W / 2 + gap, H / 2 + 105, { size: 40, align: 'left', track: 10, color: GOLD2, alpha: a * P(t, 9.8, 10.1) });
+      txt(ctx, '8강 3–0 LYON  ·  4강 3–0 IG', W / 2 + gap, H / 2 + 160, { size: 28, font: "'Noto Sans KR'", weight: 500, align: 'left', track: 4, color: GOLD, alpha: a * P(t, 10.0, 10.3) * .85 });
+      // VS 마크
+      const kv = E.back(P(t, 9.85, 10.15));
+      ctx.save(); ctx.translate(W / 2, H / 2 - 70); ctx.rotate(Math.PI / 4); ctx.scale(kv, kv); ctx.globalAlpha = a;
+      ctx.fillStyle = INK; ctx.strokeStyle = GOLD; ctx.lineWidth = 3; ctx.fillRect(-48, -48, 96, 96); ctx.strokeRect(-48, -48, 96, 96); ctx.restore();
+      txt(ctx, 'VS', W / 2, H / 2 - 70, { size: 54, track: 2, color: GOLD2, alpha: a * P(t, 9.95, 10.05) });
+    }
+  }
+
+  // S4 11.2–15.2  ONE STAGE
+  else if (t < 15.2) {
+    const lt = t - 11.2, ex = E.inExpo(P(t, 14.7, 15.2));
+    cover(1, t, 1.05 + lt * .04, -lt * 20, P(lt, 0, .4));
+    grade(.55 + ex * .45);
+    embers(t, 1);
+    txt(ctx, 'ONE', W / 2, H / 2 - 230, { size: 120, track: lerp(80, 30, E.expo(P(t, 11.6, 12.2))), alpha: P(t, 11.6, 11.8) * (1 - ex), color: GOLD });
+    if (t > 12.2) {
+      const d = t - 12.2;
+      for (let j = 1; j <= 4; j++) txt(ctx, 'STAGE', W / 2, H / 2 + 20, { size: 400, stroke: 2, color: GOLD, track: 12,
+        sx: 1 + d * .18 * j, sy: 1 + d * .18 * j, alpha: Math.max(0, .5 - d * .25) * (1 - ex) });
+    }
+    const k = E.expo(P(t, 12.0, 12.25));
+    sweep(c => txt(c, 'STAGE', W / 2, H / 2 + 20, { size: 400, track: 12, sx: lerp(.6, 1, k) + lt * .02, sy: lerp(1.6, 1, k) + lt * .02, alpha: P(t, 12.0, 12.08) * (1 - ex) }), t, 12.5, 13.6);
+    sub('전 세계가 지켜보는, 단 하나의 무대', 12.9, t, H / 2 + 270, 14.8);
+  }
+
+  // S5 15.2–19.2  BEST OF FIVE
+  else if (t < 19.2) {
+    const lt = t - 15.2, ex = E.inExpo(P(t, 18.9, 19.2));
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(lt * .05); ctx.strokeStyle = 'rgba(200,170,110,.08)'; ctx.lineWidth = 1;
+    for (let i = -20; i <= 20; i++) { ctx.beginPath(); ctx.moveTo(i * 80, -1200); ctx.lineTo(i * 80, 1200); ctx.moveTo(-1200, i * 80); ctx.lineTo(1200, i * 80); ctx.stroke(); }
+    ctx.restore();
+    embers(t, .7);
+    const ticks = [15.4, 16, 16.6, 17.2, 17.8];
+    const n = ticks.filter(x => t >= x).length;
+    const fadeNum = 1 - E.inExpo(P(t, 18.2, 18.45));
+    if (n > 0) {
+      const d = t - ticks[n - 1], pop = lerp(1.5, 1, E.expo(clamp(d / .3)));
+      chroma(String(n), W / 2, H / 2 - 10, { size: 560, sx: pop, sy: pop, color: n === 5 ? GOLD : GOLD2, alpha: fadeNum }, ca * 1.2);
+      txt(ctx, `GAME ${n}`, W / 2, H / 2 + 330, { size: 38, track: 24, color: GOLD, alpha: fadeNum });
+    }
+    const arc = lerp((n - 1) / 5, n / 5, E.expo(clamp((t - (ticks[n - 1] || 15.4)) / .35)));
+    ctx.save(); ctx.globalAlpha = fadeNum; ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(200,170,110,.18)';
+    ctx.beginPath(); ctx.arc(W / 2, H / 2 - 10, 400, 0, 7); ctx.stroke();
+    ctx.strokeStyle = GOLD; ctx.shadowColor = GOLD; ctx.shadowBlur = 20;
+    ctx.beginPath(); ctx.arc(W / 2, H / 2 - 10, 400, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, arc)); ctx.stroke(); ctx.restore();
+    if (t > 18.3) {
+      const k = E.expo(P(t, 18.3, 18.6));
+      chroma('BEST OF FIVE', W / 2, H / 2 - 30, { size: 250, track: lerp(120, 16, k) + ex * 300, alpha: P(t, 18.3, 18.4) * (1 - ex), sx: lerp(1.3, 1, k), sy: lerp(1.3, 1, k) }, ca);
+      sub('다섯 번의 전쟁, 하나의 결말', 18.55, t, H / 2 + 130, 19.1);
+    }
+  }
+
+  // S6 19.2–24.6  THE CROWN IS HEAVY
+  else if (t < 24.6) {
+    const ex = E.inExpo(P(t, 24.2, 24.6));
+    const rev = E.inOut(P(t, 22.5, 24.3));
+    if (rev > 0) {
+      ctx.save(); ctx.beginPath(); ctx.arc(W / 2, H / 2, rev * 1250, 0, 7); ctx.clip();
+      cover(2, t, 1.25 - rev * .15, 0, 1); grade(.62); ctx.restore();
+      ctx.save(); ctx.strokeStyle = GOLD; ctx.lineWidth = 3; ctx.globalAlpha = 1 - rev; ctx.beginPath(); ctx.arc(W / 2, H / 2, rev * 1250, 0, 7); ctx.stroke(); ctx.restore();
+    }
+    embers(t, t < 20.2 ? .3 : 1.1);
+    ctx.save(); ctx.translate(W / 2, H / 2); const z = 1 + ex * .5; ctx.scale(z, z); ctx.translate(-W / 2, -H / 2); ctx.globalAlpha = 1 - ex;
+    txt(ctx, 'THE', W / 2, 250, { size: 110, track: lerp(10, 50, E.out(P(t, 19.6, 20.6))), color: GOLD, alpha: P(t, 19.6, 19.9) });
+    // CROWN 낙하
+    const cy = 470;
+    const fall = E.inExpo(P(t, 19.85, 20.2));
+    const land = t - 20.2;
+    const squash = land > 0 ? 1 - .22 * Math.exp(-land * 10) * Math.cos(land * 30) : 1;
+    if (t > 19.85) chroma('CROWN', W / 2, lerp(-250, cy, fall), { size: 330, track: 14, sy: squash, sx: 2 - squash, color: GOLD2 }, ca);
+    burst(W / 2, cy + 160, 20.2, t);
+    // IS HEAVY
+    const isW = measure('IS', 150, 'Anton', 10), hvW = measure('HEAVY', 330, 'Anton', 14), gp = 40, tot = isW + gp + hvW;
+    const x0 = W / 2 - tot / 2;
+    txt(ctx, 'IS', x0, 760, { size: 150, align: 'left', track: 10, color: GOLD, alpha: P(t, 21.4, 21.5), sy: lerp(1.5, 1, E.expo(P(t, 21.4, 21.7))) });
+    if (t > 21.8) {
+      const k = E.expo(P(t, 21.8, 22.0)), l2 = t - 22;
+      const sq = l2 > 0 ? 1 - .3 * Math.exp(-l2 * 9) * Math.cos(l2 * 26) : lerp(1.8, 1, k);
+      chroma('HEAVY', x0 + isW + gp, 760, { size: 330, align: 'left', track: 14, sy: sq, sx: lerp(1.25, 1, k) * (l2 > 0 ? 2 - sq : 1), color: GOLD }, ca * 1.4);
+      burst(W / 2, 920, 22, t, 120);
+    }
+    ctx.restore();
+    sub('그 무게를 견딜 자는 누구인가', 22.9, t, 960, 24.4);
+  }
+
+  // S7 24.6–27.6  WHO WILL LIFT IT?
+  else if (t < 27.6) {
+    const lt = t - 24.6, fl = t > 26.8;
+    cover(2, t, 1.1 + lt * .05, 0, .55); grade(.7);
+    speedLines(t, .25);
+    embers(t, 1.2);
+    ctx.save(); ctx.translate(W / 2, H / 2); const z = 1 + lt * .04; ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+    const words = ['WHO', 'WILL', 'LIFT', 'IT?'], tt = [24.6, 25.1, 25.6, 26.1];
+    words.forEach((w, i) => {
+      if (t < tt[i]) return;
+      const k = E.expo(P(t, tt[i], tt[i] + .25));
+      const y = H / 2 - 300 + i * 200;
+      const filled = fl ? (Math.floor((t - 26.8) * 16) % 2 === 0 || t > 27.1) : i === 3;
+      chroma(w, lerp(W / 2 + 260, W / 2, k), y, { size: 230, track: 12, color: filled ? GOLD : GOLD2,
+        stroke: !filled && i !== 3 && fl ? 3 : 0, sx: lerp(1.3, 1, k), sy: lerp(1.3, 1, k), alpha: P(t, tt[i], tt[i] + .05) }, ca);
+    });
+    ctx.restore();
+    sub('누가, 들어올릴 것인가', 26.3, t, 1000, 27.5);
+  }
+
+  // S8 27.6–30  END CARD
+  else {
+    const lt = t - 27.6;
+    cover(2, t, 1.05, 0, .35); grade(.75);
+    const rg = ctx.createRadialGradient(W / 2, H / 2, 10, W / 2, H / 2, 900);
+    rg.addColorStop(0, 'rgba(200,170,110,.25)'); rg.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    embers(t, .9);
+    const k = E.expo(P(t, 27.65, 29));
+    sweep(c => txt(c, 'WORLDS', W / 2, H / 2 - 40, { size: 210, font: 'Cinzel', weight: 900, track: lerp(140, 40, k), color: GOLD2, alpha: P(t, 27.65, 27.9) }), t, 28.5, 29.3);
+    const lw = 700 * E.expo(P(t, 28, 28.8));
+    ctx.fillStyle = GOLD; ctx.fillRect(W / 2 - lw / 2, H / 2 + 80, lw, 2);
+    txt(ctx, `${CFG.year} GRAND FINAL`, W / 2, H / 2 + 150, { size: 72, track: lerp(60, 26, E.expo(P(t, 28.1, 29))), color: GOLD, alpha: P(t, 28.1, 28.4) });
+    txt(ctx, CFG.matchup, W / 2, H / 2 - 210, { size: 56, track: lerp(50, 22, E.expo(P(t, 28.3, 29.2))), color: GOLD2, alpha: P(t, 28.3, 28.6) * .9 });
+    txt(ctx, CFG.dateLine, W / 2, H / 2 + 235, { size: 34, font: "'Noto Sans KR'", weight: 500, track: 14, color: GOLD2, alpha: P(t, 28.5, 28.9) * .85 });
+    const fo = P(t, 29.5, 30); if (fo > 0) { ctx.fillStyle = `rgba(0,0,0,${fo})`; ctx.fillRect(0, 0, W, H); }
+  }
+  return imp;
+}
+
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const imp = impact(t);
+  const sh = imp * 16;
+  ctx.save();
+  ctx.translate(Math.sin(t * 97) * sh + Math.sin(t * 41) * sh * .5, Math.cos(t * 83) * sh);
+  const bz = 1 + imp * .015; ctx.translate(W / 2, H / 2); ctx.scale(bz, bz); ctx.translate(-W / 2, -H / 2);
+  scene(t);
+  ctx.restore();
+  // 플래시
+  const fl = Math.min(.85, impact(t, 16) * .35); if (fl > .01) { ctx.fillStyle = `rgba(255,246,225,${fl})`; ctx.fillRect(0, 0, W, H); }
+  ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalAlpha = .07; ctx.globalCompositeOperation = 'overlay';
+  ctx.fillStyle = grains[Math.floor(t * 24) % 6]; ctx.translate(rnd(Math.floor(t * 24)) * 256, rnd(Math.floor(t * 24) + 1) * 256);
+  ctx.fillRect(-256, -256, W + 512, H + 512); ctx.restore();
+  // 시네마 바
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 54); ctx.fillRect(0, H - 54, W, 54);
+}
+
+/* ===== 재생 / 오디오 / 내보내기 ===== */
+const aud = document.getElementById('aud'); aud.src = CFG.audio;
+let playing = false, t0 = 0, cur = 0, rec = null;
+const $ = id => document.getElementById(id);
+function now() { return playing ? Math.min(DUR, (performance.now() - t0) / 1000) : cur; }
+function play() {
+  if (cur >= DUR) cur = 0;
+  playing = true; t0 = performance.now() - cur * 1000;
+  try { aud.currentTime = CFG.audioStart + cur; aud.play().catch(() => {}); } catch (e) {}
+  $('play').textContent = '❚❚ 정지';
+}
+function pause() { cur = now(); playing = false; aud.pause(); $('play').textContent = '▶ 재생'; }
+$('play').onclick = () => playing ? pause() : play();
+$('restart').onclick = () => { pause(); cur = 0; play(); };
+$('scrub').oninput = e => { const was = playing; pause(); cur = +e.target.value; if (was) play(); };
+document.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); playing ? pause() : play(); } });
+
+function loop() {
+  const t = now();
+  if (playing && t >= DUR) { pause(); cur = DUR; if (rec) rec.stop(); }
+  render(Math.min(t, DUR - 1e-3));
+  $('scrub').value = t; $('time').textContent = `${t.toFixed(2).padStart(5, '0')} / 30.00`;
+  requestAnimationFrame(loop);
+}
+
+let actx, dest;
+$('export').onclick = () => {
+  const stream = cv.captureStream(60);
+  try {
+    if (!actx) { actx = new AudioContext(); const src = actx.createMediaElementSource(aud); dest = actx.createMediaStreamDestination(); src.connect(dest); src.connect(actx.destination); }
+    actx.resume(); dest.stream.getAudioTracks().forEach(tr => stream.addTrack(tr));
+  } catch (e) {}
+  const mime = ['video/webm;codecs=vp9,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 });
+  const chunks = []; rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+    a.download = 'worlds-final-30s.webm'; a.click(); rec = null; $('export').textContent = '● WebM 내보내기';
+  };
+  pause(); cur = 0; rec.start(); play(); $('export').textContent = '녹화 중…';
+};
+
+/* 파일 교체 (드래그 & 드롭 / 버튼) */
+function useFiles(files) {
+  let k = 0;
+  for (const f of files) {
+    if (f.type.startsWith('audio')) aud.src = URL.createObjectURL(f);
+    else if (f.type.startsWith('image') && k < 3) { const im = new Image(), i = k++; im.onload = () => imgs[i] = im; im.src = URL.createObjectURL(f); }
+  }
+}
+$('fAudio').onchange = e => useFiles(e.target.files);
+$('fImg').onchange = e => useFiles(e.target.files);
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); useFiles(e.dataTransfer.files); });
+
+let idle; addEventListener('mousemove', () => { document.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => playing && document.body.classList.add('idle'), 1800); });
+
+Promise.race([Promise.all(['300px Anton', '900 200px Cinzel', '500 40px "Noto Sans KR"', '900 40px "Noto Sans KR"'].map(f => document.fonts.load(f))), new Promise(r => setTimeout(r, 2500))])
+  .finally(() => { cur = 0; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
