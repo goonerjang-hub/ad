@@ -118,6 +118,24 @@ function sweep(drawFn, t, t0, t1, color = 'rgba(255,248,225,.95)') {
 /* 이미지 & 대체 비주얼 */
 const imgs = [null, null, null];
 CFG.images.forEach((src, i) => { const im = new Image(); im.onload = () => imgs[i] = im; im.src = src; });
+/* 선수 컷아웃 (투명 PNG) */
+const players = {};
+[['knight', 'images/knight.png'], ['chovy', 'images/chovy.png']].forEach(([k, src]) => { const im = new Image(); im.onload = () => players[k] = im; im.src = src; });
+const pc = document.createElement('canvas'), px = pc.getContext('2d');
+function player(key, cx, bottom, h, alpha, tint, tintAmt = .35) {
+  const im = players[key]; if (!im || alpha <= .01) return;
+  const w = Math.ceil(h * im.width / im.height); h = Math.ceil(h);
+  pc.width = w; pc.height = h;
+  px.drawImage(im, 0, 0, w, h);
+  px.globalCompositeOperation = 'source-atop';
+  px.fillStyle = 'rgba(5,6,8,.3)'; px.fillRect(0, 0, w, h);
+  px.globalAlpha = tintAmt; px.fillStyle = tint; px.fillRect(0, 0, w, h); px.globalAlpha = 1;
+  px.globalCompositeOperation = 'destination-out';
+  const g = px.createLinearGradient(0, h * .5, 0, h); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+  px.fillStyle = g; px.fillRect(0, 0, w, h);
+  px.globalCompositeOperation = 'source-over';
+  ctx.save(); ctx.globalAlpha = alpha; ctx.shadowColor = tint; ctx.shadowBlur = 40; ctx.drawImage(pc, cx - w / 2, bottom - h); ctx.restore();
+}
 function cover(i, t, scale = 1, dx = 0, alpha = 1) {
   ctx.save(); ctx.globalAlpha = alpha;
   const im = imgs[i];
@@ -237,6 +255,11 @@ function scene(t) {
     cover(0, t, 1.18 - lt * .03 + ex2 * .3, 0, P(lt, 0, .3));
     grade(.5 + P(t, 9.0, 9.3) * .2);
     embers(t, .8);
+    if (t > 9.0) { // 선수: 나이트(좌) / 쵸비(우)
+      const kL0 = E.expo(P(t, 9.1, 9.5)), kR0 = E.expo(P(t, 9.4, 9.8)), pa = 1 - ex2;
+      player('knight', W * .2 - (1 - kL0) * 220 - lt * 8, H + 30, 880, pa * kL0 * .8, '#3fd2ff');
+      player('chovy', W * .8 + (1 - kR0) * 220 + lt * 8, H + 30, 880, pa * kR0 * .8, GOLD);
+    }
     // 중앙 빛기둥 (두 파트 공통)
     const lh = H * .7 * E.expo(P(t, 7.6, 8.1)) * (1 - ex2);
     ctx.save(); ctx.shadowColor = TEAL; ctx.shadowBlur = 30; ctx.fillStyle = '#e8fffd'; ctx.fillRect(W / 2 - 2, H / 2 - 40 - lh / 2, 4, lh); ctx.restore();
@@ -347,6 +370,13 @@ function scene(t) {
     cover(2, t, 1.1 + lt * .05, 0, .55); grade(.7);
     speedLines(t, .25);
     embers(t, 1.2);
+    { // 선수 양옆 배치
+      const pa = E.out(P(t, 24.6, 25.3)), ph = 1000 + lt * 35;
+      player('knight', W * .19 - lt * 10, H + 40, ph, pa * .6, '#3fd2ff', .45);
+      player('chovy', W * .81 + lt * 10, H + 40, ph, pa * .6, GOLD, .45);
+      txt(ctx, 'KNIGHT', W * .19, H - 150, { size: 64, track: 18, color: '#3fd2ff', alpha: P(t, 25.0, 25.4) * .9 });
+      txt(ctx, 'CHOVY', W * .81, H - 150, { size: 64, track: 18, color: GOLD, alpha: P(t, 25.3, 25.7) * .9 });
+    }
     ctx.save(); ctx.translate(W / 2, H / 2); const z = 1 + lt * .04; ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
     const words = ['WHO', 'WILL', 'LIFT', 'IT?'], tt = [24.6, 25.1, 25.6, 26.1];
     words.forEach((w, i) => {
